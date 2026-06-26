@@ -1511,6 +1511,7 @@ static NSArray<NSString *> *CFXLiteModeBundleIDs(void) {
     return @[
         @"one.ayugram.AyuGramDesktop",        // Qt/C++ — crashes on view-hierarchy walking
         @"ru.ayugram.macos",                   // variant
+        @"com.obsproject.obs-studio",          // Qt — crashes on view-hierarchy walking in setStyleMask:
         // Chromium browsers (Brave, Chrome, Edge, etc.) are REMOVED from lite-mode.
         // Their original crash was SIGKILL (Code Signature Invalid) at dyld level,
         // now solved by amfi_get_out_of_my_way=1.  Full mode works for them.

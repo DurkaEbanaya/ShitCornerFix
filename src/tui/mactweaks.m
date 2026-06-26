@@ -129,6 +129,7 @@ static void cfRemoveExclusion(NSString *bundleID) {
 #define kRLSettingsPath        @"~/Library/Application Support/MacTweaks/rightlights.plist"
 #define kRLReloadNotif         @"com.local.rightlights.reload"
 #define kRLGlobalStateName     @"com.local.rightlights.global"
+#define kRLWin10StateName      @"com.local.rightlights.win10"
 #define kRLAppStatePrefix      @"com.local.rightlights.app."
 
 static NSString *rlSettingsPath(void) {
@@ -163,6 +164,34 @@ static void rlSetEnabled(BOOL enabled) {
     [p writeToFile:rlSettingsPath() atomically:YES];
 
     // Notify all running apps
+    postDarwinNotification(kRLReloadNotif);
+}
+
+// Win10 style: 0=never set (default off), 1=enabled, 2=disabled
+static BOOL rlGetWin10Enabled(void) {
+    int token = -1;
+    uint32_t s = notify_register_check([kRLWin10StateName UTF8String], &token);
+    if (s != NOTIFY_STATUS_OK) return NO;
+
+    uint64_t state = 0;
+    notify_get_state(token, &state);
+    notify_cancel(token);
+    return (state == 1);
+}
+
+static void rlSetWin10Enabled(BOOL enabled) {
+    int token = -1;
+    notify_register_check([kRLWin10StateName UTF8String], &token);
+    uint64_t state = enabled ? 1 : 2;
+    notify_set_state(token, state);
+    notify_cancel(token);
+
+    // Write to plist for persistence
+    NSMutableDictionary *p = [NSMutableDictionary dictionaryWithContentsOfFile:rlSettingsPath()] ?: [NSMutableDictionary dictionary];
+    p[@"win10"] = @(enabled);
+    ensureDir(rlSettingsPath());
+    [p writeToFile:rlSettingsPath() atomically:YES];
+
     postDarwinNotification(kRLReloadNotif);
 }
 
@@ -519,6 +548,7 @@ typedef enum {
     MENU_CF_RADIUS,
     MENU_CF_EXCLUDE,
     MENU_RL_TOGGLE,
+    MENU_RL_WIN10,
     MENU_RL_EXCLUDE,
     MENU_QUIT,
     MENU_COUNT
@@ -529,6 +559,7 @@ static const char *menuLabels[] = {
     "  Radius",
     "  Excluded Apps",
     "Right Lights",
+    "  Win10 Style",
     "  Excluded Apps",
     "Quit",
 };
@@ -595,6 +626,13 @@ static void drawMainMenu(int selected) {
                 else    { attron(A_DIM);  mvprintw(row, valX, "[OFF]"); attroff(A_DIM); }
                 break;
             }
+            case MENU_RL_WIN10: {
+                BOOL on = rlGetWin10Enabled();
+                int valX = x + w - 8;
+                if (on) { attron(A_BOLD); mvprintw(row, valX, "[ON]"); attroff(A_BOLD); }
+                else    { attron(A_DIM);  mvprintw(row, valX, "[OFF]"); attroff(A_DIM); }
+                break;
+            }
             case MENU_RL_EXCLUDE: {
                 NSUInteger c = rlGetExcludedApps().count;
                 mvprintw(row, x + w - 10, "(%lu)", (unsigned long)c);
@@ -638,6 +676,11 @@ int main(int argc, const char *argv[]) {
             int token = -1;
             notify_register_check([kRLGlobalStateName UTF8String], &token);
             notify_set_state(token, enabled ? 1 : 2);
+            notify_cancel(token);
+
+            BOOL win10 = [p[@"win10"] isKindOfClass:[NSNumber class]] ? [p[@"win10"] boolValue] : NO;
+            notify_register_check([kRLWin10StateName UTF8String], &token);
+            notify_set_state(token, win10 ? 1 : 2);
             notify_cancel(token);
             NSArray *bids = p[@"excludedBundleIDs"];
             if ([bids isKindOfClass:[NSArray class]]) {
@@ -683,6 +726,8 @@ int main(int argc, const char *argv[]) {
                         cfSetEnabled(!cfGetEnabled());
                     } else if (selected == MENU_RL_TOGGLE) {
                         rlSetEnabled(!rlGetEnabled());
+                    } else if (selected == MENU_RL_WIN10) {
+                        rlSetWin10Enabled(!rlGetWin10Enabled());
                     }
                     break;
 
@@ -702,6 +747,9 @@ int main(int argc, const char *argv[]) {
                             break;
                         case MENU_RL_TOGGLE:
                             rlSetEnabled(!rlGetEnabled());
+                            break;
+                        case MENU_RL_WIN10:
+                            rlSetWin10Enabled(!rlGetWin10Enabled());
                             break;
                         case MENU_RL_EXCLUDE:
                             showExclusions(@"Right Lights", NO);

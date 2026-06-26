@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] — 2026-06-27
+
+### What's new
+
+- **Win10-style buttons** — flat rectangular buttons with Windows 10 look:
+  - Order: `[minimize] [maximize] [close]` (close at top-right, Windows-style)
+  - Symbols: `—` (minimize), `□` (maximize), `✕` (close)
+  - Hover: gray background for min/max, red `#E81123` + white symbol for close
+  - Dark mode: white symbols on dark background
+  - Pressed state with drag-outside cancellation
+  - Size: 46×32px (titlebar height), no rounded corners
+  - Toggle via `mactweaks` TUI or `notifyutil -s com.local.rightlights.win10 1`
+
+- **Layout spacing fix (Bug 2)** — toolbar items, accessory views, and decorations no longer overlap buttons:
+  - Swizzles `_toolbarLeadingSpace` → 0, `_toolbarTrailingSpace` → button group width
+  - Swizzles `_minXTitlebarWidgetInset` → 0, `_maxXTitlebarWidgetInset` → button inset
+  - Swizzles `_minXTitlebarDragWidth` → 0, `_maxXTitlebarDragWidth` → button group width
+  - Swizzles `_minXTitlebarDecorationMinWidth` → 0, `_maxXTitlebarDecorationMinWidth` → button group width
+  - Swizzles `_minXInsetForAccessoryViews` → 0
+  - System now reserves space on the right for buttons, preventing overlaps in Safari, Finder, Calculator, Notes, Photos
+
+- **Zoom/maximize button position fix (Bug 1)** — buttons now reach the right edge after zoom:
+  - Uses `window.frame.size.width` as source of truth instead of stale `titlebarView.bounds.size.width`
+  - Expands `titlebarView.bounds` if it lags behind window frame during resize
+  - Cascading delayed reposition (50ms + 150ms) catches post-zoom layout passes
+  - Removed re-entrancy guard that was blocking the final (correct) reposition call
+
+### Fixed
+
+- **OBS crash** — `com.obsproject.obs-studio` added to CornerFix lite-mode (Qt app, was crashing on view-hierarchy walking in full mode)
+
+### Updated
+
+- **mactweaks TUI** — Win10 Style toggle in Right Lights section
+- **18 swizzles total** in RightLights (was 8 in v1.1)
+- All swizzles always installed — live toggle without restart
+
+### Tested on
+
+- macOS 26.5.1 Tahoe, x86_64, OpenCore + Lilu 1.7.3
+- Finder, Safari (sandboxed), Brave, AyuGram, Terminal, TextEdit, Notes, Calculator, OBS, OpenCode, Incy
+
 ## [1.1.0] — 2026-06-26
 
 ### What's new
