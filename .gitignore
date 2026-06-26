@@ -1,0 +1,17 @@
+# Build artifacts
+build/
+*.dylib
+*.o
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Xcode
+*.xcworkspace
+*.xcuserstate
+DerivedData/
+
+# Debug logs
+/tmp/CornerFix.debug.log
