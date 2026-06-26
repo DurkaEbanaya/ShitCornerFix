@@ -129,7 +129,6 @@ static void RLScheduleDelayedReposition(NSWindow *window) {
                    dispatch_get_main_queue(), ^{
         if (!window) return;
         if ([window respondsToSelector:@selector(isClosed)] && [window performSelector:@selector(isClosed)]) return;
-        if ((window.styleMask & NSWindowStyleMaskFullScreen) != 0) return;
         RLRepositionButtons(window);
 
         // Second cascade for slow animations
@@ -137,7 +136,6 @@ static void RLScheduleDelayedReposition(NSWindow *window) {
                        dispatch_get_main_queue(), ^{
             if (!window) return;
             if ([window respondsToSelector:@selector(isClosed)] && [window performSelector:@selector(isClosed)]) return;
-            if ((window.styleMask & NSWindowStyleMaskFullScreen) != 0) return;
             RLRepositionButtons(window);
         });
     });
@@ -496,8 +494,6 @@ static void RLNotificationCallback(CFNotificationCenterRef center,
                    wasWin10, isWin10, RLShouldActivate());
 
         for (NSWindow *window in [NSApp windows]) {
-            if ((window.styleMask & NSWindowStyleMaskFullScreen) != 0) continue;
-
             if (RLShouldActivate()) {
                 if (isWin10 && !wasWin10) {
                     // Win10 just turned ON
@@ -577,7 +573,6 @@ static CGFloat RLTitlebarWidth(NSWindow *window) {
 
 static void RLRepositionButtons(NSWindow *window) {
     if (!window) return;
-    if ((window.styleMask & NSWindowStyleMaskFullScreen) != 0) return;
 
     CGFloat tw = RLTitlebarWidth(window);
     if (tw <= 0) return;
@@ -586,6 +581,14 @@ static void RLRepositionButtons(NSWindow *window) {
         // Win10 mode: position WLButtons
         WLButtonGroup *group = objc_getAssociatedObject(window, kWLButtonAssocKey);
         if (group) {
+            // Always hide original buttons — in fullscreen, the system
+            // toggles their hidden state when showing/hiding the titlebar
+            // on hover. We must re-hide them on every layout pass to
+            // prevent them from appearing at the left position.
+            if (group.origClose) group.origClose.hidden = YES;
+            if (group.origMin)   group.origMin.hidden = YES;
+            if (group.origZoom)  group.origZoom.hidden = YES;
+
             NSView *titlebarView = RLGetTitlebarView(window);
             CGFloat titlebarHeight = titlebarView ? titlebarView.bounds.size.height : 32.0;
 
@@ -822,6 +825,59 @@ static void RLSwizzle(Class cls, SEL sel, IMP newImp, IMP *origPtr) {
             [NSStringFromSelector(sel) UTF8String]);
 }
 
+#pragma mark - Fullscreen notifications
+
+static void RLFullscreenCallback(NSNotification *notification) {
+    NSWindow *window = [notification object];
+    if (!window) return;
+    
+    NSString *name = notification.name;
+    BOOL entering = [name containsString:@"Enter"];
+    
+    RLDebugLog(@"Fullscreen: %@ window=%@", entering ? @"ENTERING" : @"EXITING", window);
+    
+    if (entering) {
+        // Reposition at multiple delays — the fullscreen transition animation
+        // takes ~0.5-1s, and the titlebar view may not be ready immediately.
+        NSTimeInterval delays[] = {0.3, 0.7, 1.5, 3.0};
+        for (int i = 0; i < 4; i++) {
+            NSTimeInterval delay = delays[i];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                if (!window) return;
+                if ([window respondsToSelector:@selector(isClosed)] && [window performSelector:@selector(isClosed)]) return;
+                if (!RLShouldActivate()) return;
+                
+                if (RLShouldActivateWin10()) {
+                    RLShowWin10Buttons(window);
+                }
+                RLRepositionButtons(window);
+            });
+        }
+    } else {
+        // Exiting fullscreen — reposition after exit
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (!window) return;
+            if ([window respondsToSelector:@selector(isClosed)] && [window performSelector:@selector(isClosed)]) return;
+            if (!RLShouldActivate()) return;
+            
+            if (RLShouldActivateWin10()) {
+                RLShowWin10Buttons(window);
+            }
+            RLRepositionButtons(window);
+        });
+        // Second pass for slow exit animations
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (!window) return;
+            if ([window respondsToSelector:@selector(isClosed)] && [window performSelector:@selector(isClosed)]) return;
+            if (!RLShouldActivate()) return;
+            RLRepositionButtons(window);
+        });
+    }
+}
+
 #pragma mark - Init
 
 __attribute__((constructor))
@@ -858,6 +914,20 @@ static void RLInit(void) {
         NULL,
         CFNotificationSuspensionBehaviorDeliverImmediately
     );
+
+    // Listen for fullscreen transitions
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidEnterFullScreenNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *n) {
+        RLFullscreenCallback(n);
+    }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidExitFullScreenNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *n) {
+        RLFullscreenCallback(n);
+    }];
 
     // Always install swizzles — hooks check RLShouldActivate() on every call.
     RLSwizzle(themeFrame, @selector(_updateButtonPositions),

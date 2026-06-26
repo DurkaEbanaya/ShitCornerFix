@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] — 2026-06-27
+
+### What's new
+
+- **Fullscreen support** — buttons now appear on the right side in fullscreen mode:
+  - Listens for `NSWindowDidEnterFullScreenNotification` / `NSWindowDidExitFullScreenNotification`
+  - Cascading delayed reposition (0.3s, 0.7s, 1.5s, 3.0s) catches the titlebar view after the fullscreen transition animation settles
+  - Works in both Win10 mode (WLButtons) and classic mode (repositioned original buttons)
+  - No fullscreen skip anywhere — all 4 `NSWindowStyleMaskFullScreen` guards removed
+
+### Fixed
+
+- **Win10 buttons in fullscreen** — system un-hides original buttons on hover; we now re-hide them on every layout pass to prevent them appearing at the left position
+- **Classic buttons in fullscreen** — original buttons repositioned to right when titlebar slides in on hover
+
+### How it works
+
+In macOS fullscreen, the titlebar is hidden by sliding the `_titlebarContainerView` up by 32px (y=-32), not by setting `hidden=YES`. The `NSTitlebarView` is still accessible with correct width (= screen width). When the user hovers at the top edge, the system slides the container back to y=0 and un-hides the buttons. Our swizzled layout methods catch this and reposition buttons to the right.
+
 ## [1.2.0] — 2026-06-27
 
 ### What's new
