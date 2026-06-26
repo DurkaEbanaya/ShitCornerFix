@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] — 2026-06-26
+
+### What's new
+
+- **RightLights** — move traffic light buttons to the right side of the window (Windows-style)
+  - Order: `[zoom] [minimize] [close]` (close at top-right, like Windows)
+  - Swizzles `NSThemeFrame._updateButtonPositions`, `_closeButtonOrigin`, `_zoomButtonOrigin`, `_titlebarTitleRect`, `_minXTitlebarButtonsWidth`, `_maxXTitlebarButtonsWidth`, `leftButtonGroupFrameInTitlebarView`, `NSTitlebarView.setFrameSize:`, `NSTitlebarView.layout`
+  - Preserves system Y position (9px for 32px titlebar, 33px for 66px titlebar+toolbar) — only mirrors X
+  - Window title moves to the left
+  - Fullscreen-aware (skips repositioning in fullscreen)
+  - Re-entrancy guard prevents layout loops
+
+- **`mactweaks` TUI** — terminal control panel (ncurses) for both CornerFix and RightLights
+  - Toggle Corner Fix on/off (live, via Darwin notifications)
+  - Set corner radius (0–24 pt)
+  - Toggle Right Lights on/off (live)
+  - Per-app exclusions with scrollable app picker — no need to know bundle IDs
+  - Lists all running GUI apps + installed apps from `/Applications` and `~/Applications`
+  - Checkbox UI: `[x]` excluded, `[ ]` not excluded
+  - Shows excluded app names in main menu
+
+- **Sandbox-safe settings via notifyd** — RightLights uses `notify_set_state` / `notify_get_state` (IPC via notifyd daemon) instead of plist files, so sandboxed apps (Safari, TextEdit, Notes) can read settings
+  - Encoding: global state 0=never set (default on), 1=enabled, 2=disabled; per-app state 0=never set (default not excluded), 1=not excluded, 2=excluded
+  - Plist file written for persistence across reboots; synced to notifyd on TUI startup
+
+- **Live toggle without restart** — all swizzles always installed; hooks check `RLShouldActivate()` on every call; Darwin notification triggers relayout of all existing windows
+
+### Updated
+
+- **Makefile** — builds CornerFix dylib + CLI + inject + test app + RightLights dylib + mactweaks TUI
+- **LaunchAgent** — injects both `libcornerfix.dylib` and `librightlights.dylib` via `DYLD_INSERT_LIBRARIES` (colon-separated)
+
+### Tested on
+
+- macOS 26.5.1 Tahoe, x86_64, OpenCore + Lilu 1.7.3
+- Finder, Safari (sandboxed, live toggle + exclusion verified), Brave, AyuGram, Terminal, TextEdit, OpenCode, Incy
+
 ## [1.0.0] — 2026-06-26
 
 ### What's new

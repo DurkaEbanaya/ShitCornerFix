@@ -4,6 +4,8 @@ CLI := $(BUILD_DIR)/cornerfixctl
 INJECT := $(BUILD_DIR)/cornerfix-inject
 TEST_APP_EXECUTABLE := $(BUILD_DIR)/CornerFixTestApp.app/Contents/MacOS/CornerFixTestApp
 TEST_APP_BUNDLE := $(BUILD_DIR)/CornerFixTestApp.app
+RL_DYLIB := $(BUILD_DIR)/librightlights.dylib
+TUI := $(BUILD_DIR)/mactweaks
 CC := clang
 COMMON_FLAGS := -fobjc-arc -Wall -Wextra -Werror
 FRAMEWORKS := -framework Foundation -framework AppKit -framework QuartzCore -framework ScreenCaptureKit -framework CoreMedia
@@ -15,10 +17,12 @@ CLI_SOURCES := $(COMMON_SOURCES) src/cli/main.m
 INJECT_SOURCES := src/inject/main.m
 TEST_APP_SOURCES := src/testapp/main.m
 TEST_APP_PLIST := src/testapp/Info.plist
+RL_SOURCES := src/rightlights/RightLights.m
+TUI_SOURCES := src/tui/mactweaks.m
 
-.PHONY: all clean dylib cli inject testapp examples install uninstall
+.PHONY: all clean dylib cli inject testapp rightlights tui examples install uninstall
 
-all: dylib cli inject testapp
+all: dylib cli inject testapp rightlights tui
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -45,6 +49,19 @@ $(TEST_APP_EXECUTABLE): $(TEST_APP_SOURCES) $(TEST_APP_PLIST) | $(BUILD_DIR)
 	mkdir -p $(BUILD_DIR)/CornerFixTestApp.app/Contents/Resources
 	cp $(TEST_APP_PLIST) $(BUILD_DIR)/CornerFixTestApp.app/Contents/Info.plist
 	$(CC) $(COMMON_FLAGS) $(TEST_APP_SOURCES) -framework Foundation -framework AppKit -o $(TEST_APP_EXECUTABLE)
+
+rightlights: $(RL_DYLIB)
+
+$(RL_DYLIB): $(RL_SOURCES) | $(BUILD_DIR)
+	$(CC) -fobjc-arc -Wall -Wno-format -O2 -dynamiclib $(RL_SOURCES) \
+		-framework Cocoa -framework Foundation -o $(RL_DYLIB)
+
+tui: $(TUI)
+
+$(TUI): $(TUI_SOURCES) | $(BUILD_DIR)
+	$(CC) -fobjc-arc -Wall -Wno-format -O2 $(TUI_SOURCES) \
+		-framework Cocoa -framework Foundation -framework CoreFoundation \
+		-lncurses -o $(TUI)
 
 examples: all
 	chmod +x examples/*.sh

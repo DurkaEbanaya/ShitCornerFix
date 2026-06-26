@@ -1,10 +1,18 @@
 # ShitCornerFix
 
-**Square window corners on macOS 26 Tahoe. No more rounded bullshit.**
+**Square window corners + right-side traffic lights on macOS 26 Tahoe. No more rounded bullshit.**
 
-macOS 26 (Tahoe) cranked window corner radius from 10pt (Sequoia) to 16pt. This dylib forces it back to **0pt — fully square** — across all applications, including Safari, Finder, Brave, and Qt apps.
+Two dylibs, one TUI:
 
-## What It Does
+1. **CornerFix** (`libcornerfix.dylib`) — forces window corner radius to **0pt** (fully square)
+2. **RightLights** (`librightlights.dylib`) — moves traffic light buttons to the **right** side of the window (Windows-style): `[zoom] [minimize] [close]`
+3. **mactweaks** (TUI) — terminal control panel to toggle both features on/off, set radius, and manage per-app exclusions — all live, without restarting apps
+
+macOS 26 (Tahoe) cranked window corner radius from 10pt (Sequoia) to 16pt. This project forces it back to **0pt** — fully square — across all applications, including Safari, Finder, Brave, and Qt apps. It also moves the traffic light buttons (close/minimize/zoom) from the left to the right side of the titlebar, like Windows.
+
+## Features
+
+### Corner Fix — square corners
 
 `libcornerfix.dylib` is injected into every GUI application via `DYLD_INSERT_LIBRARIES`. At load time it swizzles private `NSWindow` / `NSThemeFrame` methods that control corner rendering:
 
@@ -44,6 +52,77 @@ Automatically activated based on bundle ID. Lite mode:
 - **Does NOT** install notification observers or overlay views
 
 To add an app to lite mode, edit `CFXLiteModeBundleIDs()` in `src/sharpener/CornerFixSharpener.m`.
+
+### Right Lights — traffic lights on the right
+
+`librightlights.dylib` moves the close/minimize/zoom buttons from the left to the right side of the titlebar, Windows-style.
+
+**Order (left to right in right group):** `[zoom] [minimize] [close]` — close at the top-right corner.
+
+Swizzled methods:
+
+| Method | Class | Purpose |
+|---|---|---|
+| `_updateButtonPositions` | NSThemeFrame | Main button layout — repositions after original |
+| `layout` | NSThemeFrame | General layout — repositions after original |
+| `_titlebarTitleRect` | NSThemeFrame | Window title — moved to left |
+| `_minXTitlebarButtonsWidth` | NSThemeFrame | Left button zone → 0 |
+| `_maxXTitlebarButtonsWidth` | NSThemeFrame | Right button zone → 69px |
+| `leftButtonGroupFrameInTitlebarView` | NSThemeFrame | Hit-test/hover zone → right-aligned |
+| `setFrameSize:` | NSTitlebarView | Repositions on resize |
+| `layout` | NSTitlebarView | Repositions on titlebar layout |
+
+Key design decisions:
+- **Y preserved** — system computes Y differently for toolbar (y=33) vs non-toolbar (y=9) windows; only X is mirrored
+- **Fullscreen-aware** — skips repositioning when window is fullscreen
+- **Re-entrancy guard** — prevents layout loops from `setFrameOrigin:` triggering `layout`
+- **Always-installed swizzles** — hooks check `RLShouldActivate()` on every call, enabling live toggle
+
+### mactweaks — Terminal Control Panel
+
+```
+mactweaks
+```
+
+ncurses TUI for controlling both CornerFix and RightLights:
+
+```
+┌─ MacTweaks Control Panel ──────────────────────────┐
+│                                                     │
+│  Corner Fix                              [ON]       │
+│    Radius                                0 pt       │
+│    Excluded Apps                         (0)        │
+│                                                     │
+│  Right Lights                            [ON]       │
+│    Excluded Apps                         (0)        │
+│                                                     │
+│  Quit                                               │
+│                                                     │
+│  ^/v Navigate  Space Toggle  Enter Edit  q Quit     │
+└─────────────────────────────────────────────────────┘
+```
+
+| Key | Action |
+|---|---|
+| `↑/↓` or `j/k` | Navigate |
+| `Space` | Toggle on/off |
+| `Enter` | Edit (radius, open exclusions picker) |
+| `Space` in picker | Add/remove app from exclusions |
+| `PageUp/PageDown` | Scroll app list |
+| `q` / `Esc` | Quit / back |
+
+The exclusions picker shows all running GUI apps + installed apps from `/Applications` and `~/Applications` with checkboxes — no need to know bundle IDs.
+
+### Sandbox-safe settings (notifyd)
+
+Safari, TextEdit, Notes and other sandboxed apps cannot read files in `~/Library/Application Support/`. RightLights uses `notify_set_state` / `notify_get_state` (IPC via the notifyd daemon) to communicate settings to sandboxed apps. This works because notifyd is a system daemon that mediates communication — no file access needed.
+
+**Encoding:**
+- Global: `com.local.rightlights.global` — state 0=never set (default on), 1=enabled, 2=disabled
+- Per-app: `com.local.rightlights.app.<bundleID>` — state 0=never set (default not excluded), 1=not excluded, 2=excluded
+- Reload: `com.local.rightlights.reload` — posted after any change; all running apps re-read state and relayout
+
+A plist file (`~/Library/Application Support/MacTweaks/rightlights.plist`) is also written for persistence across reboots. The TUI syncs plist → notifyd on startup.
 
 ## Requirements
 
@@ -92,18 +171,27 @@ make all
 ```
 
 Artifacts in `build/`:
-- `libcornerfix.dylib` — the injected library
-- `cornerfixctl` — CLI for live control
+- `libcornerfix.dylib` — square corners dylib
+- `cornerfixctl` — CLI for live corner radius control
 - `cornerfix-inject` — CLI for per-app injection
 - `CornerFixTestApp.app` — test app
+- `librightlights.dylib` — right-side traffic lights dylib
+- `mactweaks` — terminal UI control panel
 
 ### 2. Sign and install
 
 ```bash
 codesign -f -s - build/libcornerfix.dylib
+codesign -f -s - build/librightlights.dylib
+codesign -f -s - build/mactweaks
+codesign -f -s - build/cornerfixctl
+codesign -f -s - build/cornerfix-inject
+
 cp build/libcornerfix.dylib /usr/local/lib/libcornerfix.dylib
+cp build/librightlights.dylib /usr/local/lib/librightlights.dylib
 cp build/cornerfixctl /usr/local/bin/cornerfixctl
 cp build/cornerfix-inject /usr/local/bin/cornerfix-inject
+cp build/mactweaks /usr/local/bin/mactweaks
 ```
 
 ### 3. Create LaunchAgent (auto-injection at login)
@@ -122,7 +210,7 @@ cat > ~/Library/LaunchAgents/com.local.shitcornerfix.plist << 'EOF'
     <string>launchctl</string>
     <string>setenv</string>
     <string>DYLD_INSERT_LIBRARIES</string>
-    <string>/usr/local/lib/libcornerfix.dylib</string>
+    <string>/usr/local/lib/libcornerfix.dylib:/usr/local/lib/librightlights.dylib</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -136,7 +224,7 @@ launchctl load ~/Library/LaunchAgents/com.local.shitcornerfix.plist
 ### 4. Activate in current session
 
 ```bash
-launchctl setenv DYLD_INSERT_LIBRARIES /usr/local/lib/libcornerfix.dylib
+launchctl setenv DYLD_INSERT_LIBRARIES /usr/local/lib/libcornerfix.dylib:/usr/local/lib/librightlights.dylib
 ```
 
 ### 5. Restart running apps
@@ -146,7 +234,7 @@ killall Finder
 killall Dock
 ```
 
-New windows will have square corners. Apps launched after this point will automatically get the dylib.
+New windows will have square corners and right-side traffic lights. Apps launched after this point will automatically get both dylibs.
 
 ## Live Control (cornerfixctl)
 
@@ -340,10 +428,11 @@ MIT. See [LICENSE](LICENSE).
 | macOS | 26.5.1 Tahoe (25F80) |
 | Architecture | x86_64 (Intel hackintosh, MacPro7,1) |
 | Bootloader | OpenCore + Lilu 1.7.3 + WhateverGreen + AMFIPass |
-| Finder | square |
-| Safari | square |
-| Brave (Chromium) | square (full mode, requires AMFI off) |
-| AyuGram (Qt) | square (lite mode) |
-| Terminal | square |
-| OpenCode | square |
-| Incy | square |
+| Finder | square corners + right buttons |
+| Safari | square corners + right buttons (sandboxed, live toggle + exclusion verified) |
+| Brave (Chromium) | square corners + right buttons (full mode, requires AMFI off) |
+| AyuGram (Qt) | square corners (lite mode) + right buttons |
+| Terminal | square corners + right buttons |
+| TextEdit | square corners + right buttons (sandboxed) |
+| OpenCode | square corners + right buttons |
+| Incy | square corners + right buttons |
