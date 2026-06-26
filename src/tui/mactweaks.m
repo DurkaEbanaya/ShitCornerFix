@@ -669,19 +669,51 @@ int main(int argc, const char *argv[]) {
         // Build bundle ID → name map for displaying exclusions
         buildBundleNameMap();
 
-        // Sync RightLights plist → notifyd state on startup
+        // Sync RightLights plist ↔ notifyd state on startup.
+        // If plist has the key → plist is source of truth → write to notifyd.
+        // If plist is missing the key → notifyd is source of truth → write to plist.
+        // This prevents clobbering runtime state set via notifyutil when the
+        // plist key doesn't exist yet.
         {
-            NSDictionary *p = [NSDictionary dictionaryWithContentsOfFile:rlSettingsPath()];
-            BOOL enabled = [p[@"enabled"] isKindOfClass:[NSNumber class]] ? [p[@"enabled"] boolValue] : YES;
+            NSMutableDictionary *p = [NSMutableDictionary dictionaryWithContentsOfFile:rlSettingsPath()] ?: [NSMutableDictionary dictionary];
+            BOOL dirty = NO;
             int token = -1;
-            notify_register_check([kRLGlobalStateName UTF8String], &token);
-            notify_set_state(token, enabled ? 1 : 2);
-            notify_cancel(token);
 
-            BOOL win10 = [p[@"win10"] isKindOfClass:[NSNumber class]] ? [p[@"win10"] boolValue] : NO;
-            notify_register_check([kRLWin10StateName UTF8String], &token);
-            notify_set_state(token, win10 ? 1 : 2);
-            notify_cancel(token);
+            // Global enabled: default YES if neither plist nor notifyd has it
+            if (p[@"enabled"]) {
+                BOOL enabled = [p[@"enabled"] boolValue];
+                notify_register_check([kRLGlobalStateName UTF8String], &token);
+                notify_set_state(token, enabled ? 1 : 2);
+                notify_cancel(token);
+            } else {
+                // Read from notifyd, persist to plist
+                notify_register_check([kRLGlobalStateName UTF8String], &token);
+                uint64_t state = 0;
+                notify_get_state(token, &state);
+                notify_cancel(token);
+                BOOL enabled = (state != 2);  // 0=never set→default YES, 1=enabled, 2=disabled
+                p[@"enabled"] = @(enabled);
+                dirty = YES;
+            }
+
+            // Win10: default NO if neither plist nor notifyd has it
+            if (p[@"win10"]) {
+                BOOL win10 = [p[@"win10"] boolValue];
+                notify_register_check([kRLWin10StateName UTF8String], &token);
+                notify_set_state(token, win10 ? 1 : 2);
+                notify_cancel(token);
+            } else {
+                // Read from notifyd, persist to plist
+                notify_register_check([kRLWin10StateName UTF8String], &token);
+                uint64_t state = 0;
+                notify_get_state(token, &state);
+                notify_cancel(token);
+                BOOL win10 = (state == 1);  // 0=never set→default NO, 1=enabled, 2=disabled
+                p[@"win10"] = @(win10);
+                dirty = YES;
+            }
+
+            // Excluded apps
             NSArray *bids = p[@"excludedBundleIDs"];
             if ([bids isKindOfClass:[NSArray class]]) {
                 for (NSString *bid in bids) {
@@ -690,6 +722,11 @@ int main(int argc, const char *argv[]) {
                     notify_set_state(token, 2);  // excluded
                     notify_cancel(token);
                 }
+            }
+
+            if (dirty) {
+                ensureDir(rlSettingsPath());
+                [p writeToFile:rlSettingsPath() atomically:YES];
             }
         }
 
