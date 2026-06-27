@@ -35,6 +35,7 @@ dylib: $(DYLIB)
 
 $(DYLIB): $(DYLIB_SOURCES) | $(BUILD_DIR)
 	$(CC) $(COMMON_FLAGS) -dynamiclib $(DYLIB_SOURCES) $(FRAMEWORKS) -o $(DYLIB)
+	codesign --force --sign - $(DYLIB)
 
 cli: $(CLI)
 
@@ -59,6 +60,7 @@ rightlights: $(RL_DYLIB)
 $(RL_DYLIB): $(RL_SOURCES) | $(BUILD_DIR)
 	$(CC) -fobjc-arc -Wall -Wno-format -O2 -dynamiclib $(RL_SOURCES) \
 		-framework Cocoa -framework Foundation -o $(RL_DYLIB)
+	codesign --force --sign - $(RL_DYLIB)
 
 fluentsidebar: $(FS_DYLIB)
 
@@ -71,6 +73,7 @@ noanims: $(NA_DYLIB)
 $(NA_DYLIB): $(NA_SOURCES) | $(BUILD_DIR)
 	$(CC) -fobjc-arc -Wall -Wno-format -O2 -dynamiclib $(NA_SOURCES) \
 		-framework Cocoa -framework QuartzCore -o $(NA_DYLIB)
+	codesign --force --sign - $(NA_DYLIB)
 
 tui: $(TUI)
 

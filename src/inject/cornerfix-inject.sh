@@ -2,6 +2,10 @@
 # cornerfix-inject.sh — set DYLD_INSERT_LIBRARIES in launchd, then restart
 # GUI processes so they inherit the environment variable.
 # Also applies system-wide animation defaults (NoAnims).
+#
+# IMPORTANT: When updating dylibs, use `install` (not `cp`) to create a new
+# inode. cp overwrites in-place and corrupts memory-mapped pages in running
+# processes → AMFI kills them with "Invalid Page" / Code Signature Invalid.
 
 DYLDS="/usr/local/lib/libcornerfix.dylib:/usr/local/lib/librightlights.dylib:/usr/local/lib/libnoanims.dylib"
 

@@ -112,9 +112,23 @@ static BOOL RLShouldActivate(void) {
     return YES;
 }
 
+// Win10 is independent of RightLights. Win10 controls button *style* only
+// (flat rectangles with —/□/✕). Position is controlled by RightLights:
+//   Win10 ON + RightLights OFF → Win10 buttons on LEFT (native position)
+//   Win10 ON + RightLights ON  → Win10 buttons on RIGHT
+//   Win10 OFF + RightLights ON → native macOS buttons on RIGHT
+//   Win10 OFF + RightLights OFF → default macOS (native left)
 static BOOL RLShouldActivateWin10(void) {
-    if (!RLShouldActivate()) return NO;
-    return rlWin10Enabled;
+    if (!rlWin10Enabled) return NO;
+    if (rlExcluded) return NO;
+    return YES;
+}
+
+// Combined check: any layout modification needed (Win10 buttons or
+// RightLights repositioning). Used by layout swizzles to decide whether
+// to override the system's default left-side button layout.
+static BOOL RLShouldModifyLayout(void) {
+    return RLShouldActivate() || RLShouldActivateWin10();
 }
 
 static void RLRepositionButtons(NSWindow *window);
@@ -352,6 +366,7 @@ typedef NS_ENUM(NSInteger, WLButtonType) {
 
 static const char *kWLButtonAssocKey = "com.local.rightlights.wlbuttons";
 static const char *kWLOriginalButtonsAssocKey = "com.local.rightlights.origbuttons";
+static const char *kRLFSWindowAssocKey = "com.local.rightlights.fswindow";
 
 @interface WLButtonGroup : NSObject
 @property (strong) WLButton *minButton;
@@ -426,6 +441,9 @@ static WLButtonGroup *RLGetOrCreateButtonGroup(NSWindow *window) {
 }
 
 static void RLShowWin10Buttons(NSWindow *window) {
+    // In fullscreen: WLButtons are managed by RLFullscreenCallback — skip
+    if (objc_getAssociatedObject(window, kRLFSWindowAssocKey)) return;
+
     WLButtonGroup *group = RLGetOrCreateButtonGroup(window);
     if (!group) return;
 
@@ -490,11 +508,11 @@ static void RLNotificationCallback(CFNotificationCenterRef center,
         RLSettingsLoad();
         BOOL isWin10 = rlWin10Enabled;
 
-        RLDebugLog(@"relayout: win10 was=%d now=%d shouldActivate=%d",
-                   wasWin10, isWin10, RLShouldActivate());
+        RLDebugLog(@"relayout: win10 was=%d now=%d layout=%d",
+                   wasWin10, isWin10, RLShouldModifyLayout());
 
         for (NSWindow *window in [NSApp windows]) {
-            if (RLShouldActivate()) {
+            if (RLShouldModifyLayout()) {
                 if (isWin10 && !wasWin10) {
                     // Win10 just turned ON
                     RLShowWin10Buttons(window);
@@ -513,7 +531,7 @@ static void RLNotificationCallback(CFNotificationCenterRef center,
                     ((void(*)(id,SEL))objc_msgSend)(tv, @selector(layout));
                 }
             } else {
-                // RightLights disabled — remove Win10 buttons if any
+                // Both RightLights and Win10 disabled — remove Win10 buttons if any
                 RLRemoveWin10Buttons(window);
 
                 // Trigger relayout to restore original button positions
@@ -574,6 +592,23 @@ static CGFloat RLTitlebarWidth(NSWindow *window) {
 static void RLRepositionButtons(NSWindow *window) {
     if (!window) return;
 
+    // In fullscreen: WLButtons are in NSToolbarFullScreenWindow, not in
+    // the main window's titlebar. Skip — RLFullscreenCallback handles
+    // fullscreen button positioning.
+    if (RLShouldActivateWin10()) {
+        NSWindow *fsWindow = objc_getAssociatedObject(window, kRLFSWindowAssocKey);
+        if (fsWindow) {
+            // Just hide originals — don't position WLButtons
+            WLButtonGroup *group = objc_getAssociatedObject(window, kWLButtonAssocKey);
+            if (group) {
+                if (group.origClose) group.origClose.hidden = YES;
+                if (group.origMin)   group.origMin.hidden = YES;
+                if (group.origZoom)  group.origZoom.hidden = YES;
+            }
+            return;
+        }
+    }
+
     CGFloat tw = RLTitlebarWidth(window);
     if (tw <= 0) return;
 
@@ -581,10 +616,7 @@ static void RLRepositionButtons(NSWindow *window) {
         // Win10 mode: position WLButtons
         WLButtonGroup *group = objc_getAssociatedObject(window, kWLButtonAssocKey);
         if (group) {
-            // Always hide original buttons — in fullscreen, the system
-            // toggles their hidden state when showing/hiding the titlebar
-            // on hover. We must re-hide them on every layout pass to
-            // prevent them from appearing at the left position.
+            // Always hide original buttons
             if (group.origClose) group.origClose.hidden = YES;
             if (group.origMin)   group.origMin.hidden = YES;
             if (group.origZoom)  group.origZoom.hidden = YES;
@@ -592,28 +624,37 @@ static void RLRepositionButtons(NSWindow *window) {
             NSView *titlebarView = RLGetTitlebarView(window);
             CGFloat titlebarHeight = titlebarView ? titlebarView.bounds.size.height : 32.0;
 
-            // Ensure titlebar view bounds match window width —
-            // macOS may leave titlebar view at old width during resize,
-            // causing WLButtons (positioned at tw-kWLButtonWidth) to be
-            // clipped or invisible if they fall outside the view's bounds.
-            if (titlebarView && titlebarView.bounds.size.width < tw) {
-                NSRect newBounds = titlebarView.bounds;
-                newBounds.size.width = tw;
-                [titlebarView setBounds:newBounds];
+            if (RLShouldActivate()) {
+                // RightLights ON → buttons on RIGHT side
+                // Ensure titlebar view bounds match window width
+                if (titlebarView && titlebarView.bounds.size.width < tw) {
+                    NSRect newBounds = titlebarView.bounds;
+                    newBounds.size.width = tw;
+                    [titlebarView setBounds:newBounds];
+                }
+
+                // Order: [minimize] [maximize] [close] (left to right)
+                CGFloat closeX = tw - kWLButtonWidth;
+                CGFloat maxX   = tw - kWLButtonWidth * 2;
+                CGFloat minX   = tw - kWLButtonWidth * 3;
+
+                [group.closeButton setFrame:NSMakeRect(closeX, 0, kWLButtonWidth, titlebarHeight)];
+                [group.maxButton  setFrame:NSMakeRect(maxX, 0, kWLButtonWidth, titlebarHeight)];
+                [group.minButton  setFrame:NSMakeRect(minX, 0, kWLButtonWidth, titlebarHeight)];
+            } else {
+                // RightLights OFF → buttons on LEFT side (native position)
+                // Win10 order: [minimize] [maximize] [close] (left to right)
+                CGFloat minX = 0;
+                CGFloat maxX = kWLButtonWidth;
+                CGFloat closeX = kWLButtonWidth * 2;
+
+                [group.minButton  setFrame:NSMakeRect(minX, 0, kWLButtonWidth, titlebarHeight)];
+                [group.maxButton  setFrame:NSMakeRect(maxX, 0, kWLButtonWidth, titlebarHeight)];
+                [group.closeButton setFrame:NSMakeRect(closeX, 0, kWLButtonWidth, titlebarHeight)];
             }
-
-            // Order: [minimize] [maximize] [close] (left to right)
-            // Close at far right
-            CGFloat closeX = tw - kWLButtonWidth;
-            CGFloat maxX   = tw - kWLButtonWidth * 2;
-            CGFloat minX   = tw - kWLButtonWidth * 3;
-
-            [group.closeButton setFrame:NSMakeRect(closeX, 0, kWLButtonWidth, titlebarHeight)];
-            [group.maxButton  setFrame:NSMakeRect(maxX, 0, kWLButtonWidth, titlebarHeight)];
-            [group.minButton  setFrame:NSMakeRect(minX, 0, kWLButtonWidth, titlebarHeight)];
         }
-    } else {
-        // Classic mode: reposition original buttons
+    } else if (RLShouldActivate()) {
+        // Classic mode (RightLights ON, Win10 OFF): reposition original buttons
         NSButton *closeBtn = [window standardWindowButton:NSWindowCloseButton];
         NSButton *minBtn   = [window standardWindowButton:NSWindowMiniaturizeButton];
         NSButton *zoomBtn  = [window standardWindowButton:NSWindowZoomButton];
@@ -643,18 +684,27 @@ static NSRect RLComputeTitleRect(NSRect origRect, NSWindow *window) {
     if (!window) return origRect;
 
     CGFloat tw = RLTitlebarWidth(window);
-    CGFloat rightLimit = tw - RLRightGroupWidth() - 10.0;
-    CGFloat titleWidth = rightLimit - kRightInset;
-    if (titleWidth < 0) titleWidth = 0;
 
-    return NSMakeRect(kRightInset, origRect.origin.y, titleWidth, origRect.size.height);
+    if (RLShouldActivate()) {
+        // RightLights ON: title from left inset to right button group
+        CGFloat rightLimit = tw - RLRightGroupWidth() - 10.0;
+        CGFloat titleWidth = rightLimit - kRightInset;
+        if (titleWidth < 0) titleWidth = 0;
+        return NSMakeRect(kRightInset, origRect.origin.y, titleWidth, origRect.size.height);
+    }
+
+    // Win10 ON + RightLights OFF: title after left Win10 button group
+    CGFloat leftStart = kWLButtonWidth * 3 + 10.0;
+    CGFloat titleWidth = tw - leftStart - 10.0;
+    if (titleWidth < 0) titleWidth = 0;
+    return NSMakeRect(leftStart, origRect.origin.y, titleWidth, origRect.size.height);
 }
 
 #pragma mark - NSThemeFrame hooks
 
 static void RL_updateButtonPositions(id self, SEL _cmd) {
     ((void(*)(id,SEL))orig_updateButtonPositions)(self, _cmd);
-    if (RLShouldActivate()) {
+    if (RLShouldModifyLayout()) {
         NSWindow *window = [(NSView *)self window];
         if (RLShouldActivateWin10()) {
             RLShowWin10Buttons(window);
@@ -665,7 +715,7 @@ static void RL_updateButtonPositions(id self, SEL _cmd) {
 
 static void RL_layout(id self, SEL _cmd) {
     ((void(*)(id,SEL))orig_layout)(self, _cmd);
-    if (RLShouldActivate()) {
+    if (RLShouldModifyLayout()) {
         NSWindow *window = [(NSView *)self window];
         if (RLShouldActivateWin10()) {
             RLShowWin10Buttons(window);
@@ -677,22 +727,19 @@ static void RL_layout(id self, SEL _cmd) {
 
 static NSRect RL_titlebarTitleRect(id self, SEL _cmd) {
     NSRect orig = ((NSRect(*)(id,SEL))orig_titlebarTitleRect)(self, _cmd);
-    if (!RLShouldActivate()) return orig;
+    if (!RLShouldActivate() && !RLShouldActivateWin10()) return orig;
     return RLComputeTitleRect(orig, [(NSView *)self window]);
 }
 
 static CGFloat RL_minXTitlebarButtonsWidth(id self, SEL _cmd) {
-    if (!RLShouldActivate()) {
-        return ((CGFloat(*)(id,SEL))orig_minXTitlebarBtnWidth)(self, _cmd);
-    }
-    return 0.0;
+    if (RLShouldActivate()) return 0.0;  // RightLights ON → no left buttons
+    if (RLShouldActivateWin10()) return kWLButtonWidth * 3;  // Win10 on left
+    return ((CGFloat(*)(id,SEL))orig_minXTitlebarBtnWidth)(self, _cmd);  // native
 }
 
 static CGFloat RL_maxXTitlebarButtonsWidth(id self, SEL _cmd) {
-    if (!RLShouldActivate()) {
-        return ((CGFloat(*)(id,SEL))orig_maxXTitlebarBtnWidth)(self, _cmd);
-    }
-    return RLRightGroupWidth();
+    if (RLShouldActivate()) return RLRightGroupWidth();  // RightLights ON → buttons on right
+    return ((CGFloat(*)(id,SEL))orig_maxXTitlebarBtnWidth)(self, _cmd);  // native
 }
 
 static NSRect RL_leftButtonGroupFrameInTitlebarView(id self, SEL _cmd) {
@@ -723,73 +770,60 @@ static NSRect RL_leftButtonGroupFrameInTitlebarView(id self, SEL _cmd) {
 // This makes toolbar items, accessory views, and decorations avoid the right side.
 
 static double RL_toolbarLeadingSpace(id self, SEL _cmd) {
-    if (!RLShouldActivate()) {
-        return ((double(*)(id,SEL))orig_toolbarLeadingSpace)(self, _cmd);
-    }
-    return 0.0;  // no buttons on the left
+    if (RLShouldActivate()) return 0.0;  // RightLights ON → no left space
+    if (RLShouldActivateWin10()) return kWLButtonWidth * 3;  // Win10 on left
+    return ((double(*)(id,SEL))orig_toolbarLeadingSpace)(self, _cmd);  // native
 }
 
 static double RL_toolbarTrailingSpace(id self, SEL _cmd) {
-    if (!RLShouldActivate()) {
-        return ((double(*)(id,SEL))orig_toolbarTrailingSpace)(self, _cmd);
-    }
-    return RLRightGroupWidth();  // reserve space on the right for buttons
+    if (RLShouldActivate()) return RLRightGroupWidth();  // RightLights ON → right space
+    return ((double(*)(id,SEL))orig_toolbarTrailingSpace)(self, _cmd);  // native
 }
 
 static double RL_minXTitlebarWidgetInset(id self, SEL _cmd) {
-    if (!RLShouldActivate()) {
-        return ((double(*)(id,SEL))orig_minXTitlebarWidgetInset)(self, _cmd);
-    }
-    return 0.0;  // no left widget inset
+    if (RLShouldActivate()) return 0.0;  // no left widget
+    if (RLShouldActivateWin10()) return kWLButtonWidth * 3;  // Win10 left widget
+    return ((double(*)(id,SEL))orig_minXTitlebarWidgetInset)(self, _cmd);  // native
 }
 
 static double RL_maxXTitlebarWidgetInset(id self, SEL _cmd) {
-    if (!RLShouldActivate()) {
-        return ((double(*)(id,SEL))orig_maxXTitlebarWidgetInset)(self, _cmd);
-    }
-    return rlWin10Enabled ? 0.0 : kRightInset;  // right widget inset
+    if (RLShouldActivate()) return rlWin10Enabled ? 0.0 : kRightInset;  // right widget
+    return ((double(*)(id,SEL))orig_maxXTitlebarWidgetInset)(self, _cmd);  // native
 }
 
 static double RL_minXTitlebarDragWidth(id self, SEL _cmd) {
-    if (!RLShouldActivate()) {
-        return ((double(*)(id,SEL))orig_minXTitlebarDragWidth)(self, _cmd);
-    }
-    return 0.0;  // no left drag area
+    if (RLShouldActivate()) return 0.0;  // no left drag
+    if (RLShouldActivateWin10()) return kWLButtonWidth * 3;  // Win10 left drag
+    return ((double(*)(id,SEL))orig_minXTitlebarDragWidth)(self, _cmd);  // native
 }
 
 static double RL_maxXTitlebarDragWidth(id self, SEL _cmd) {
-    if (!RLShouldActivate()) {
-        return ((double(*)(id,SEL))orig_maxXTitlebarDragWidth)(self, _cmd);
-    }
-    return RLRightGroupWidth();  // right drag area = button area
+    if (RLShouldActivate()) return RLRightGroupWidth();  // right drag
+    return ((double(*)(id,SEL))orig_maxXTitlebarDragWidth)(self, _cmd);  // native
 }
 
 static double RL_minXTitlebarDecorationMinWidth(id self, SEL _cmd) {
-    if (!RLShouldActivate()) {
-        return ((double(*)(id,SEL))orig_minXTitlebarDecorationMinW)(self, _cmd);
-    }
-    return 0.0;  // no left decoration
+    if (RLShouldActivate()) return 0.0;  // no left decoration
+    if (RLShouldActivateWin10()) return kWLButtonWidth * 3;
+    return ((double(*)(id,SEL))orig_minXTitlebarDecorationMinW)(self, _cmd);  // native
 }
 
 static double RL_maxXTitlebarDecorationMinWidth(id self, SEL _cmd) {
-    if (!RLShouldActivate()) {
-        return ((double(*)(id,SEL))orig_maxXTitlebarDecorationMinW)(self, _cmd);
-    }
-    return RLRightGroupWidth();  // right decoration = button area
+    if (RLShouldActivate()) return RLRightGroupWidth();  // right decoration
+    return ((double(*)(id,SEL))orig_maxXTitlebarDecorationMinW)(self, _cmd);  // native
 }
 
 static double RL_minXInsetForAccessoryViews(id self, SEL _cmd) {
-    if (!RLShouldActivate()) {
-        return ((double(*)(id,SEL))orig_minXInsetForAccessoryViews)(self, _cmd);
-    }
-    return 0.0;  // no left inset for accessories
+    if (RLShouldActivate()) return 0.0;
+    if (RLShouldActivateWin10()) return kWLButtonWidth * 3;
+    return ((double(*)(id,SEL))orig_minXInsetForAccessoryViews)(self, _cmd);  // native
 }
 
 #pragma mark - NSTitlebarView hooks
 
 static void RL_titlebarSetFrameSize(id self, SEL _cmd, NSSize size) {
     ((void(*)(id,SEL,NSSize))orig_titlebarSetFrameSize)(self, _cmd, size);
-    if (RLShouldActivate()) {
+    if (RLShouldModifyLayout()) {
         NSWindow *window = [(NSView *)self window];
         if (RLShouldActivateWin10()) {
             RLShowWin10Buttons(window);
@@ -801,7 +835,7 @@ static void RL_titlebarSetFrameSize(id self, SEL _cmd, NSSize size) {
 
 static void RL_titlebarLayout(id self, SEL _cmd) {
     ((void(*)(id,SEL))orig_titlebarLayout)(self, _cmd);
-    if (RLShouldActivate()) {
+    if (RLShouldModifyLayout()) {
         NSWindow *window = [(NSView *)self window];
         if (RLShouldActivateWin10()) {
             RLShowWin10Buttons(window);
@@ -824,18 +858,35 @@ static void RLSwizzle(Class cls, SEL sel, IMP newImp, IMP *origPtr) {
 
 #pragma mark - Fullscreen notifications
 
+// Find the NSToolbarFullScreenWindow for the given main window.
+// In fullscreen, macOS creates a separate hidden window (NSToolbarFullScreenWindow)
+// that contains the titlebar/toolbar and shows it on hover. We move WLButtons
+// to its contentView so they show/hide with the toolbar naturally.
+static NSWindow *RLFindToolbarFullScreenWindow(NSWindow *mainWindow) {
+    NSScreen *screen = [mainWindow screen];
+    for (NSWindow *w in [NSApp windows]) {
+        if (![[w className] isEqualToString:@"NSToolbarFullScreenWindow"]) continue;
+        if (screen && [w screen] != screen) continue;
+        return w;
+    }
+    for (NSWindow *w in [NSApp windows]) {
+        if ([[w className] isEqualToString:@"NSToolbarFullScreenWindow"]) return w;
+    }
+    return nil;
+}
+
 static void RLFullscreenCallback(NSNotification *notification) {
     NSWindow *window = [notification object];
     if (!window) return;
-    
+
     NSString *name = notification.name;
     BOOL entering = [name containsString:@"Enter"];
-    
+
     RLDebugLog(@"Fullscreen: %@ window=%@", entering ? @"ENTERING" : @"EXITING", window);
-    
+
     if (entering) {
-        // Reposition at multiple delays — the fullscreen transition animation
-        // takes ~0.5-1s, and the titlebar view may not be ready immediately.
+        // Retry at increasing delays — NSToolbarFullScreenWindow may not
+        // exist immediately after entering fullscreen.
         NSTimeInterval delays[] = {0.3, 0.7, 1.5, 3.0};
         for (int i = 0; i < 4; i++) {
             NSTimeInterval delay = delays[i];
@@ -844,34 +895,103 @@ static void RLFullscreenCallback(NSNotification *notification) {
                 if (!window) return;
                 if ([window respondsToSelector:@selector(isClosed)] && [window performSelector:@selector(isClosed)]) return;
                 if (!RLShouldActivate()) return;
-                
-                if (RLShouldActivateWin10()) {
-                    RLShowWin10Buttons(window);
+                if (!RLShouldActivateWin10()) return;
+
+                WLButtonGroup *group = objc_getAssociatedObject(window, kWLButtonAssocKey);
+                if (!group) return;
+
+                // Already placed in toolbar window — just reposition
+                NSWindow *existingFS = objc_getAssociatedObject(window, kRLFSWindowAssocKey);
+                if (existingFS) {
+                    NSView *cv = [existingFS contentView];
+                    if (cv && group.closeButton.superview == cv) {
+                        CGFloat cw = cv.bounds.size.width;
+                        CGFloat ch = cv.bounds.size.height;
+                        CGFloat bh = group.closeButton.bounds.size.height;
+                        CGFloat y = [cv isFlipped] ? 0 : (ch - bh);
+                        // 2 buttons in fullscreen: [max] [close]
+                        [group.closeButton setFrame:NSMakeRect(cw - kWLButtonWidth, y, kWLButtonWidth, bh)];
+                        [group.maxButton  setFrame:NSMakeRect(cw - kWLButtonWidth * 2, y, kWLButtonWidth, bh)];
+                    }
+                    return;
                 }
-                RLRepositionButtons(window);
+
+                NSWindow *fsWindow = RLFindToolbarFullScreenWindow(window);
+                if (!fsWindow) return;
+
+                NSView *fsContent = [fsWindow contentView];
+                if (!fsContent) return;
+
+                // Move max + close buttons to fullscreen toolbar window.
+                // Minimize button is hidden — macOS doesn't support minimize
+                // in fullscreen, so we show only [maximize] [close].
+                [group.closeButton removeFromSuperview];
+                [group.maxButton removeFromSuperview];
+                [group.minButton removeFromSuperview];
+
+                [fsContent addSubview:group.maxButton];
+                [fsContent addSubview:group.closeButton];
+
+                // Position at top-right corner: [max] [close]
+                CGFloat cw = fsContent.bounds.size.width;
+                CGFloat ch = fsContent.bounds.size.height;
+                CGFloat bh = 28;
+                CGFloat y = [fsContent isFlipped] ? 0 : (ch - bh);
+                [group.closeButton setFrame:NSMakeRect(cw - kWLButtonWidth, y, kWLButtonWidth, bh)];
+                [group.maxButton  setFrame:NSMakeRect(cw - kWLButtonWidth * 2, y, kWLButtonWidth, bh)];
+
+                group.closeButton.hidden = NO;
+                group.maxButton.hidden = NO;
+                group.minButton.hidden = YES;  // no minimize in fullscreen
+
+                // Hide original traffic light buttons
+                if (group.origClose) group.origClose.hidden = YES;
+                if (group.origMin)   group.origMin.hidden = YES;
+                if (group.origZoom)  group.origZoom.hidden = YES;
+
+                objc_setAssociatedObject(window, kRLFSWindowAssocKey,
+                    fsWindow, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+                RLDebugLog(@"FS: 2 buttons (max+close) moved to NSToolbarFullScreenWindow");
             });
         }
     } else {
-        // Exiting fullscreen — reposition after exit
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (!window) return;
-            if ([window respondsToSelector:@selector(isClosed)] && [window performSelector:@selector(isClosed)]) return;
-            if (!RLShouldActivate()) return;
-            
-            if (RLShouldActivateWin10()) {
-                RLShowWin10Buttons(window);
-            }
-            RLRepositionButtons(window);
-        });
-        // Second pass for slow exit animations
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (!window) return;
-            if ([window respondsToSelector:@selector(isClosed)] && [window performSelector:@selector(isClosed)]) return;
-            if (!RLShouldActivate()) return;
-            RLRepositionButtons(window);
-        });
+        // Exiting fullscreen — move buttons back, show all 3
+        NSTimeInterval exitDelays[] = {0.3, 1.5};
+        for (int i = 0; i < 2; i++) {
+            NSTimeInterval delay = exitDelays[i];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                if (!window) return;
+                if ([window respondsToSelector:@selector(isClosed)] && [window performSelector:@selector(isClosed)]) return;
+                if (!RLShouldActivate()) return;
+
+                NSWindow *fsWindow = objc_getAssociatedObject(window, kRLFSWindowAssocKey);
+                if (!fsWindow) return;
+
+                if (RLShouldActivateWin10()) {
+                    WLButtonGroup *group = objc_getAssociatedObject(window, kWLButtonAssocKey);
+                    NSView *titlebarView = RLGetTitlebarView(window);
+                    if (group && titlebarView) {
+                        [group.closeButton removeFromSuperview];
+                        [group.maxButton removeFromSuperview];
+                        [group.minButton removeFromSuperview];
+                        [titlebarView addSubview:group.minButton];
+                        [titlebarView addSubview:group.maxButton];
+                        [titlebarView addSubview:group.closeButton];
+                        // Show all 3 buttons again
+                        group.minButton.hidden = NO;
+                    }
+                    RLShowWin10Buttons(window);
+                    RLRepositionButtons(window);
+                }
+
+                objc_setAssociatedObject(window, kRLFSWindowAssocKey,
+                    nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+                RLDebugLog(@"FS: buttons moved back to main titlebar, 3 buttons restored");
+            });
+        }
     }
 }
 
@@ -953,7 +1073,27 @@ static void RLInit(void) {
         RLFullscreenCallback(n);
     }];
 
-    // Always install swizzles — hooks check RLShouldActivate() on every call.
+    // Fix: buttons may be created at (0,0) during an early layout pass when
+    // the window frame is 0×0 (RLRepositionButtons returns early for tw<=0).
+    // When the window becomes key (visible at proper size), reposition the
+    // buttons to the right edge. This catches the initial window appearance
+    // without waiting for the first user-triggered layout (e.g. toolbar hover).
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidBecomeKeyNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *n) {
+        if (!RLShouldActivateWin10()) return;
+        NSWindow *window = [n object];
+        if (!window) return;
+        // Skip if in fullscreen — buttons are handled by RLFullscreenCallback
+        NSWindow *fsWindow = objc_getAssociatedObject(window, kRLFSWindowAssocKey);
+        if (fsWindow) return;
+        RLShowWin10Buttons(window);
+        RLRepositionButtons(window);
+        RLScheduleDelayedReposition(window);
+    }];
+
+    // Always install swizzles — hooks check RLShouldModifyLayout() on every call.
     RLSwizzle(themeFrame, @selector(_updateButtonPositions),
               (IMP)RL_updateButtonPositions, &orig_updateButtonPositions);
     RLSwizzle(themeFrame, @selector(layout),

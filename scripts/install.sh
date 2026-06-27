@@ -9,6 +9,10 @@ SHARE_DIR=${SHARE_DIR:-$PREFIX/share/cornerfix}
 ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 
 mkdir -p "$LIB_DIR" "$BIN_DIR" "$SHARE_DIR/examples"
+
+# install creates a new inode each time — critical for dylibs that may
+# be memory-mapped by running processes. cp overwrites in-place and
+# corrupts mapped pages → AMFI kills processes with "Invalid Page".
 install -m 755 "$ROOT_DIR/build/libcornerfix.dylib" "$LIB_DIR/libcornerfix.dylib"
 install -m 755 "$ROOT_DIR/build/cornerfixctl" "$BIN_DIR/cornerfixctl"
 install -m 755 "$ROOT_DIR/build/cornerfix-inject" "$BIN_DIR/cornerfix-inject"
