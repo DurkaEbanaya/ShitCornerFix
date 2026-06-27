@@ -1531,9 +1531,23 @@ static NSArray<NSString *> *CFXLiteModeBundleIDs(void) {
         @"ru.ayugram.macos",                   // variant
         @"com.obsproject.obs-studio",          // Qt — crashes on view-hierarchy walking in setStyleMask:
         @"ru.oneme.desktop",                   // Qt6 — crashes on view-hierarchy walking (tryPerformObjectSelector)
-        // Chromium browsers (Brave, Chrome, Edge, etc.) are REMOVED from lite-mode.
-        // Their original crash was SIGKILL (Code Signature Invalid) at dyld level,
-        // now solved by amfi_get_out_of_my_way=1.  Full mode works for them.
+        // Chromium browsers: lite mode is the correct mode for them.
+        // Full mode registers 8 NSNotification observers and walks the view
+        // hierarchy + invokes private selectors on every notification — for
+        // Chromium apps that generate many window events during creation, this
+        // creates a notification storm (31 hooks/sec, 112% CPU) that blocks
+        // the main thread and triggers the GPU watchdog (~30s → kill).
+        // Lite mode only swizzles getter/setter methods (_effectiveCornerRadius,
+        // _cornerMask, etc.) — the compositor reads these and draws square
+        // corners.  Zero notifications, zero view hierarchy walking, zero overhead.
+        // The original AMFI crash (Code Signature Invalid) is solved by
+        // amfi_get_out_of_my_way=1 in NVRAM.
+        @"com.brave.Browser",                  // Brave Browser
+        @"com.google.Chrome",                  // Google Chrome
+        @"com.microsoft.edgemac",              // Microsoft Edge
+        @"com.vivaldi.Vivaldi",                // Vivaldi
+        @"com.operasoftware.Opera",            // Opera
+        @"com.apple.Safari",                   // Safari (WebKit — same NativeWidgetMac)
     ];
 }
 
