@@ -5,6 +5,7 @@ INJECT := $(BUILD_DIR)/cornerfix-inject
 TEST_APP_EXECUTABLE := $(BUILD_DIR)/CornerFixTestApp.app/Contents/MacOS/CornerFixTestApp
 TEST_APP_BUNDLE := $(BUILD_DIR)/CornerFixTestApp.app
 RL_DYLIB := $(BUILD_DIR)/librightlights.dylib
+FS_DYLIB := $(BUILD_DIR)/libfluentsidebar.dylib
 TUI := $(BUILD_DIR)/mactweaks
 CC := clang
 COMMON_FLAGS := -fobjc-arc -Wall -Wextra -Werror
@@ -18,11 +19,12 @@ INJECT_SOURCES := src/inject/main.m
 TEST_APP_SOURCES := src/testapp/main.m
 TEST_APP_PLIST := src/testapp/Info.plist
 RL_SOURCES := src/rightlights/RightLights.m
+FS_SOURCES := src/fluentsidebar/FluentSidebar.m
 TUI_SOURCES := src/tui/mactweaks.m
 
-.PHONY: all clean dylib cli inject testapp rightlights tui examples install uninstall
+.PHONY: all clean dylib cli inject testapp rightlights fluentsidebar tui examples install uninstall
 
-all: dylib cli inject testapp rightlights tui
+all: dylib cli inject testapp rightlights fluentsidebar tui
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -55,6 +57,12 @@ rightlights: $(RL_DYLIB)
 $(RL_DYLIB): $(RL_SOURCES) | $(BUILD_DIR)
 	$(CC) -fobjc-arc -Wall -Wno-format -O2 -dynamiclib $(RL_SOURCES) \
 		-framework Cocoa -framework Foundation -o $(RL_DYLIB)
+
+fluentsidebar: $(FS_DYLIB)
+
+$(FS_DYLIB): $(FS_SOURCES) | $(BUILD_DIR)
+	$(CC) -fobjc-arc -Wall -Wno-format -O2 -dynamiclib $(FS_SOURCES) \
+		-framework Cocoa -framework Foundation -framework QuartzCore -o $(FS_DYLIB)
 
 tui: $(TUI)
 

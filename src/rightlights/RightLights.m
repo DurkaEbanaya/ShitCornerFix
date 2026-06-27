@@ -815,14 +815,11 @@ static void RL_titlebarLayout(id self, SEL _cmd) {
 static void RLSwizzle(Class cls, SEL sel, IMP newImp, IMP *origPtr) {
     Method m = class_getInstanceMethod(cls, sel);
     if (!m) {
-        fprintf(stderr, "[RightLights] WARNING: method not found: %s\n",
-                [NSStringFromSelector(sel) UTF8String]);
+        RLDebugLog(@"WARNING: method not found: %@", NSStringFromSelector(sel));
         return;
     }
     *origPtr = method_setImplementation(m, newImp);
-    fprintf(stderr, "[RightLights] swizzled %s.%s\n",
-            [NSStringFromClass(cls) UTF8String],
-            [NSStringFromSelector(sel) UTF8String]);
+    RLDebugLog(@"swizzled %@.%@", NSStringFromClass(cls), NSStringFromSelector(sel));
 }
 
 #pragma mark - Fullscreen notifications
@@ -899,7 +896,34 @@ static void RLInit(void) {
         notify_register_check([appNotifName UTF8String], &rlAppToken);
     }
 
-    // Load settings from notifyd
+    // After reboot, notifyd state resets to 0. Restore from plist if plist has keys.
+    // This ensures settings persist across reboots without needing TUI to run first.
+    {
+        NSString *plistPath = [kRLSettingsPath stringByExpandingTildeInPath];
+        NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+        if (plist) {
+            // Restore global enabled state
+            if (plist[@"enabled"]) {
+                BOOL enabled = [plist[@"enabled"] boolValue];
+                uint64_t curState = 0;
+                notify_get_state(rlGlobalToken, &curState);
+                if (curState == 0) {  // never set (after reboot)
+                    notify_set_state(rlGlobalToken, enabled ? 1 : 2);
+                }
+            }
+            // Restore win10 state
+            if (plist[@"win10"]) {
+                BOOL win10 = [plist[@"win10"] boolValue];
+                uint64_t curState = 0;
+                notify_get_state(rlWin10Token, &curState);
+                if (curState == 0) {  // never set (after reboot)
+                    notify_set_state(rlWin10Token, win10 ? 1 : 2);
+                }
+            }
+        }
+    }
+
+    // Load settings from notifyd (now restored from plist)
     RLSettingsLoad();
 
     RLDebugLog(@"init: bundle=%@ enabled=%d win10=%d excluded=%d",
