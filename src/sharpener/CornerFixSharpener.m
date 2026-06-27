@@ -1555,8 +1555,21 @@ static BOOL CFXIsLiteModeBundle(NSString *bundleIdentifier) {
     if (bundleIdentifier.length == 0) {
         return NO;
     }
-    for (NSString *blocked in CFXLiteModeBundleIDs()) {
-        if ([bundleIdentifier isEqualToString:blocked]) {
+    for (NSString *base in CFXLiteModeBundleIDs()) {
+        // Exact match (main process)
+        if ([bundleIdentifier isEqualToString:base]) {
+            return YES;
+        }
+        // Prefix match: base + "." covers all helper/child processes.
+        // Chromium browsers spawn helpers with bundle IDs like:
+        //   com.brave.Browser.helper
+        //   com.brave.Browser.helper.renderer
+        //   com.brave.Browser.framework.AlertNotificationService
+        // These are full-mode by default → notification storm on GPU process
+        // → Chromium GPU watchdog kill. Must use lite mode for ALL processes
+        // in the bundle family.
+        NSString *prefix = [base stringByAppendingString:@"."];
+        if ([bundleIdentifier hasPrefix:prefix]) {
             return YES;
         }
     }
