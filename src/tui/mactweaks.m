@@ -253,6 +253,39 @@ static void rlRemoveExclusion(NSString *bundleID) {
     rlSetExcluded(bundleID, NO);
 }
 
+#pragma mark - NoAnims settings (via notifyd state)
+
+#define kNASettingsPath        @"~/Library/Application Support/MacTweaks/noanims.plist"
+#define kNAReloadNotif         @"com.local.noanims.reload"
+#define kNAGlobalStateName     @"com.local.noanims.enabled"
+
+static NSString *naSettingsPath(void) {
+    return [kNASettingsPath stringByExpandingTildeInPath];
+}
+
+static BOOL naGetEnabled(void) {
+    int token = -1;
+    uint32_t s = notify_register_check([kNAGlobalStateName UTF8String], &token);
+    if (s != NOTIFY_STATUS_OK) return YES;
+    uint64_t state = 0;
+    notify_get_state(token, &state);
+    notify_cancel(token);
+    return (state != 2);
+}
+
+static void naSetEnabled(BOOL enabled) {
+    int token = -1;
+    notify_register_check([kNAGlobalStateName UTF8String], &token);
+    uint64_t state = enabled ? 1 : 2;
+    notify_set_state(token, state);
+    notify_cancel(token);
+    NSMutableDictionary *p = [NSMutableDictionary dictionaryWithContentsOfFile:naSettingsPath()] ?: [NSMutableDictionary dictionary];
+    p[@"enabled"] = @(enabled);
+    ensureDir(naSettingsPath());
+    [p writeToFile:naSettingsPath() atomically:YES];
+    postDarwinNotification(kNAReloadNotif);
+}
+
 #pragma mark - ncurses helpers
 
 static void drawBox(int y, int x, int h, int w) {
@@ -550,6 +583,7 @@ typedef enum {
     MENU_RL_TOGGLE,
     MENU_RL_WIN10,
     MENU_RL_EXCLUDE,
+    MENU_NA_TOGGLE,
     MENU_QUIT,
     MENU_COUNT
 } MenuItem;
@@ -561,6 +595,7 @@ static const char *menuLabels[] = {
     "Right Lights",
     "  Win10 Style",
     "  Excluded Apps",
+    "No Animations",
     "Quit",
 };
 
@@ -650,6 +685,13 @@ static void drawMainMenu(int selected) {
                 }
                 break;
             }
+            case MENU_NA_TOGGLE: {
+                BOOL on = naGetEnabled();
+                int valX = x + w - 8;
+                if (on) { attron(A_BOLD); mvprintw(row, valX, "[ON]"); attroff(A_BOLD); }
+                else    { attron(A_DIM);  mvprintw(row, valX, "[OFF]"); attroff(A_DIM); }
+                break;
+            }
         }
 
         if (i == selected) attroff(A_REVERSE);
@@ -730,6 +772,33 @@ int main(int argc, const char *argv[]) {
             }
         }
 
+        // Sync NoAnims plist ↔ notifyd state on startup
+        {
+            NSMutableDictionary *p = [NSMutableDictionary dictionaryWithContentsOfFile:naSettingsPath()] ?: [NSMutableDictionary dictionary];
+            BOOL dirty = NO;
+            int token = -1;
+
+            if (p[@"enabled"]) {
+                BOOL enabled = [p[@"enabled"] boolValue];
+                notify_register_check([kNAGlobalStateName UTF8String], &token);
+                notify_set_state(token, enabled ? 1 : 2);
+                notify_cancel(token);
+            } else {
+                notify_register_check([kNAGlobalStateName UTF8String], &token);
+                uint64_t state = 0;
+                notify_get_state(token, &state);
+                notify_cancel(token);
+                BOOL enabled = (state != 2);
+                p[@"enabled"] = @(enabled);
+                dirty = YES;
+            }
+
+            if (dirty) {
+                ensureDir(naSettingsPath());
+                [p writeToFile:naSettingsPath() atomically:YES];
+            }
+        }
+
         // ncurses init
         initscr();
         cbreak();
@@ -765,6 +834,8 @@ int main(int argc, const char *argv[]) {
                         rlSetEnabled(!rlGetEnabled());
                     } else if (selected == MENU_RL_WIN10) {
                         rlSetWin10Enabled(!rlGetWin10Enabled());
+                    } else if (selected == MENU_NA_TOGGLE) {
+                        naSetEnabled(!naGetEnabled());
                     }
                     break;
 
@@ -790,6 +861,9 @@ int main(int argc, const char *argv[]) {
                             break;
                         case MENU_RL_EXCLUDE:
                             showExclusions(@"Right Lights", NO);
+                            break;
+                        case MENU_NA_TOGGLE:
+                            naSetEnabled(!naGetEnabled());
                             break;
                         case MENU_QUIT:
                             endwin();
