@@ -66,6 +66,9 @@ static const void *kCFXExternalOverlayWindowKey = &kCFXExternalOverlayWindowKey;
 
 // Lite mode: forward-declared here so it's visible to CornerFixSharpener methods.
 static BOOL sCFXLiteMode = NO;
+// Fully disabled: set when plist says enabled=false for this bundle.
+// Causes start to skip all hooks/swizzles/refresh — CornerFix is a no-op.
+static BOOL sCFXDisabled = NO;
 
 static BOOL CFXDebugLoggingEnabled(void) {
     return CFXReadDebugLoggingEnabled() || [NSProcessInfo.processInfo.environment[@"CFX_DEBUG"] boolValue];
@@ -417,6 +420,10 @@ static NSImage *CFXCornerMaskImageForRadius(CGFloat cornerRadius) {
 - (void)start {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        if (sCFXDisabled) {
+            CFXLog(@"start bundle=%@ DISABLED — skipping all hooks", _bundleIdentifier);
+            return;
+        }
         CFXLog(@"start bundle=%@ lite=%d", _bundleIdentifier, sCFXLiteMode);
         if (sCFXLiteMode) {
             [self installLiteHooks];
@@ -569,6 +576,17 @@ static NSImage *CFXCornerMaskImageForRadius(CGFloat cornerRadius) {
 }
 
 - (void)reloadPreferencesAndRefresh {
+    // Re-check plist: bundle may have been disabled/enabled since constructor ran
+    bool plistEnabled = CFXReadEnabledForBundleIdentifier((__bridge CFStringRef)_bundleIdentifier);
+    if (!plistEnabled) {
+        CFXLog(@"reloadPreferencesAndRefresh: DISABLED for bundle=%@", _bundleIdentifier);
+        // Remove overlays from tracked windows
+        for (NSWindow *window in [_trackedWindows copy]) {
+            [self restoreWindowIfNeeded:window];
+        }
+        [_trackedWindows removeAllObjects];
+        return;
+    }
     CFXLog(@"reloadPreferencesAndRefresh enabled=%d radius=%.1f debug=%d",
            CFXReadEnabledForBundleIdentifier((__bridge CFStringRef)_bundleIdentifier),
            CFXReadRadiusForBundleIdentifier((__bridge CFStringRef)_bundleIdentifier),
@@ -1533,6 +1551,33 @@ static BOOL CFXIsLiteModeBundle(NSString *bundleIdentifier) {
 __attribute__((constructor))
 static void CornerFixSharpenerInitialize(void) {
     NSString *bundleID = NSBundle.mainBundle.bundleIdentifier ?: @"";
+
+    // Check settings plist FIRST — if disabled for this bundle, skip entirely.
+    // This unifies the two exclusion mechanisms: the hardcoded lite-mode array
+    // and the per-bundle settings plist. Previously, the plist was only checked
+    // in effectiveRadiusForWindow: (too late — refreshAllWindows already walked
+    // Qt window internals and crashed with EXC_BAD_ACCESS).
+    //
+    // New flow:
+    //   1. plist enabled=false → CornerFix does nothing (no hooks, no swizzles)
+    //   2. plist enabled=true + bundle in hardcoded lite list → lite mode
+    //   3. plist enabled=true + bundle not in lite list → full mode
+    bool plistEnabled = CFXReadEnabledForBundleIdentifier((__bridge CFStringRef)bundleID);
+    if (!plistEnabled) {
+        // CornerFix is disabled for this bundle. Set lite to a sentinel value
+        // that causes start to skip entirely.
+        sCFXLiteMode = NO;
+        sCFXDisabled = YES;
+        CFXLog(@"constructor loaded process=%@ bundle=%@ DISABLED (plist enabled=false)",
+               NSProcessInfo.processInfo.processName,
+               bundleID.length > 0 ? bundleID : @"(none)");
+        // Still dispatch start so it can log and return early
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[CornerFixSharpener shared] start];
+        });
+        return;
+    }
+
     sCFXLiteMode = CFXIsLiteModeBundle(bundleID);
 
     CFXLog(@"constructor loaded process=%@ bundle=%@ lite=%d",
